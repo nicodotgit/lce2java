@@ -1,6 +1,7 @@
 import sys
 import subprocess
 import os
+import json
 import signal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -135,8 +136,53 @@ class MainWindow(QMainWindow):
         valid = bool(self.lce2je_in_path and self.lce2je_out_path)
         self.btn_convert.setEnabled(valid)
         
+    def check_progress_compatibility(self, in_path, out_path):
+        if not in_path or not out_path: return True, ""
+        prog_file = os.path.join(out_path, "lce2je_progress.json")
+        if os.path.exists(prog_file):
+            try:
+                with open(prog_file, "r") as f:
+                    state = json.load(f)
+                saved_in = state.get("input_file")
+                if saved_in and os.path.abspath(saved_in) != os.path.abspath(in_path):
+                    return False, "Directory contains progress for a different world."
+            except Exception:
+                pass
+        return True, ""
+
+    def get_native_open_file(self, title, filter_ext):
+        if sys.platform.startswith("linux"):
+            desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+            if "kde" in desktop:
+                try:
+                    res = subprocess.run(["kdialog", "--getopenfilename", ".", f"*{filter_ext}"], capture_output=True, text=True)
+                    if res.returncode == 0: return res.stdout.strip()
+                except FileNotFoundError: pass
+            try:
+                res = subprocess.run(["zenity", "--file-selection", "--title", title, f"--file-filter={filter_ext}"], capture_output=True, text=True)
+                if res.returncode == 0: return res.stdout.strip()
+            except FileNotFoundError: pass
+        
+        path, _ = QFileDialog.getOpenFileName(self, title, "", f"Minecraft Save (*{filter_ext})")
+        return path
+
+    def get_native_directory(self, title):
+        if sys.platform.startswith("linux"):
+            desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+            if "kde" in desktop:
+                try:
+                    res = subprocess.run(["kdialog", "--getexistingdirectory", "."], capture_output=True, text=True)
+                    if res.returncode == 0: return res.stdout.strip()
+                except FileNotFoundError: pass
+            try:
+                res = subprocess.run(["zenity", "--file-selection", "--directory", "--title", title], capture_output=True, text=True)
+                if res.returncode == 0: return res.stdout.strip()
+            except FileNotFoundError: pass
+            
+        return QFileDialog.getExistingDirectory(self, title)
+
     def select_lce2je_in(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select saveData.ms", "", "Minecraft Save (*.ms)")
+        path = self.get_native_open_file("Select saveData.ms", ".ms")
         if path:
             if not path.endswith('.ms'):
                 self.lbl_lce2je_in_status.setText("❌ Invalid file. Must end with .ms")
@@ -149,19 +195,49 @@ class MainWindow(QMainWindow):
                     self.lbl_lce2je_in_status.setStyleSheet("color: red;")
                     self.lce2je_in_path = ""
                 else:
+                    if self.lce2je_out_path:
+                        if os.path.exists(os.path.join(self.lce2je_out_path, "level.dat")):
+                            self.lbl_lce2je_in_status.setText("❌ Output directory is already a completely converted world.")
+                            self.lbl_lce2je_in_status.setStyleSheet("color: red;")
+                            self.lce2je_in_path = ""
+                            self.update_convert_button_state()
+                            return
+                        compat, cmsg = self.check_progress_compatibility(path, self.lce2je_out_path)
+                        if not compat:
+                            self.lbl_lce2je_in_status.setText(f"❌ {cmsg}")
+                            self.lbl_lce2je_in_status.setStyleSheet("color: red;")
+                            self.lce2je_in_path = ""
+                            self.update_convert_button_state()
+                            return
+                            
                     self.lbl_lce2je_in_status.setText(f"✅ Selected: {os.path.basename(path)}")
                     self.lbl_lce2je_in_status.setStyleSheet("color: green;")
                     self.lce2je_in_path = path
+                    
+                    if self.lce2je_out_path:
+                        compat, cmsg = self.check_progress_compatibility(path, self.lce2je_out_path)
+                        if compat and self.lbl_lce2je_out_status.text().startswith("❌"):
+                            self.lbl_lce2je_out_status.setText(f"✅ Selected: {os.path.basename(self.lce2je_out_path)}")
+                            self.lbl_lce2je_out_status.setStyleSheet("color: green;")
         self.update_convert_button_state()
         
     def select_lce2je_out(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        path = self.get_native_directory("Select Output Directory")
         if path:
             if os.path.exists(os.path.join(path, "level.dat")):
-                self.lbl_lce2je_out_status.setText("❌ Directory already contains a level.dat")
+                self.lbl_lce2je_out_status.setText("❌ Directory already contains a completely converted world (level.dat exists).")
                 self.lbl_lce2je_out_status.setStyleSheet("color: red;")
                 self.lce2je_out_path = ""
             else:
+                if self.lce2je_in_path:
+                    compat, cmsg = self.check_progress_compatibility(self.lce2je_in_path, path)
+                    if not compat:
+                        self.lbl_lce2je_out_status.setText(f"❌ {cmsg}")
+                        self.lbl_lce2je_out_status.setStyleSheet("color: red;")
+                        self.lce2je_out_path = ""
+                        self.update_convert_button_state()
+                        return
+                
                 self.lbl_lce2je_out_status.setText(f"✅ Selected: {os.path.basename(path) or path}")
                 self.lbl_lce2je_out_status.setStyleSheet("color: green;")
                 self.lce2je_out_path = path
@@ -310,19 +386,65 @@ class MainWindow(QMainWindow):
             if self.current_progress_bar:
                 self.current_progress_bar.setVisible(False)
                 
-        lbl = QLabel("✅ Conversion Completed Successfully!")
+        lbl = QLabel("✅ Conversion completed successfully!")
         lbl.setStyleSheet("color: green; font-weight: bold;")
         self.steps_layout.addWidget(lbl)
-        QMessageBox.information(self, "Success", f"Conversion completed successfully!\nSaved to: {path}")
         
-        # Auto-open the output folder
+        self.btn_convert.setText("Open Output Directory")
+        try: self.btn_convert.clicked.disconnect()
+        except TypeError: pass
+        self.btn_convert.clicked.connect(self.open_output_dir)
+        self.btn_convert.setEnabled(True)
+        
+        self.btn_cancel.setText("Clear")
+        try: self.btn_cancel.clicked.disconnect()
+        except TypeError: pass
+        self.btn_cancel.clicked.connect(self.clear_gui)
+        self.btn_cancel.setEnabled(True)
+        
+        self.btn_lce2je_in.setEnabled(False)
+        self.btn_lce2je_out.setEnabled(False)
+
+    def clear_gui(self):
+        self.btn_convert.setText("Convert")
+        try: self.btn_convert.clicked.disconnect()
+        except TypeError: pass
+        self.btn_convert.clicked.connect(self.start_conversion)
+        
+        self.btn_cancel.setText("Cancel")
+        try: self.btn_cancel.clicked.disconnect()
+        except TypeError: pass
+        self.btn_cancel.clicked.connect(self.cancel_clicked)
+        
+        self.btn_lce2je_in.setEnabled(True)
+        self.btn_lce2je_out.setEnabled(True)
+        
+        self.lce2je_in_path = ""
+        self.lce2je_out_path = ""
+        
+        if hasattr(self, 'lbl_lce2je_in_status'):
+            self.lbl_lce2je_in_status.setText("")
+            self.lbl_lce2je_out_status.setText("")
+            
+        # Clean steps layout
+        while self.steps_layout.count():
+            child = self.steps_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        self.steps_group.setVisible(False)
+        self.update_convert_button_state()
+        self.btn_cancel.setEnabled(False)
+
+    def open_output_dir(self):
+        if not self.lce2je_out_path or not os.path.exists(self.lce2je_out_path): return
         try:
             if sys.platform == "win32":
-                os.startfile(path)
+                os.startfile(self.lce2je_out_path)
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
+                subprocess.Popen(["open", self.lce2je_out_path])
             else:
-                subprocess.Popen(["xdg-open", path])
+                subprocess.Popen(["xdg-open", self.lce2je_out_path])
         except Exception as e:
             print(f"Could not automatically open folder: {e}")
             
@@ -335,8 +457,10 @@ class MainWindow(QMainWindow):
             self.current_progress_bar.setValue(curr)
         
     def on_worker_finished(self):
-        self.update_convert_button_state()
-        self.btn_cancel.setEnabled(False)
+        # Only reset the button states if we are not in the "Success" state
+        if self.btn_cancel.text() != "Clear":
+            self.update_convert_button_state()
+            self.btn_cancel.setEnabled(False)
 
     def handle_lce_player_mapping(self, players):
         dlg = lce2jePlayerMappingDialog(players, self)

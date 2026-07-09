@@ -92,6 +92,10 @@ class lce2jePlayerMappingDialog(QDialog):
                 host_player = p
                 
         return kept_players, host_player
+        
+    def reject(self):
+        # Ignore Escape key and close attempts so the user is forced to click OK
+        pass
 
 class CancelDialog(QDialog):
     def __init__(self, parent=None):
